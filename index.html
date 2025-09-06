@@ -1,0 +1,598 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PhishBuster - Catch the Phish, Save the Click</title>
+    <link rel="stylesheet" href="styles.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.development.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.development.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+    <!-- 1. Add Firebase and required libraries in <head> -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/10.7.1/firebase-app-compat.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/10.7.1/firebase-auth-compat.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/10.7.1/firebase-firestore-compat.min.js"></script>
+</head>
+<body>
+    <div id="root"></div>
+    
+    <script src="data.js"></script>
+
+    <script type="text/babel">
+        // 2. Import React hooks
+        const { useState, useEffect, useContext, createContext } = React;
+
+        // 3. Add your Firebase config object
+        // For Firebase JS SDK v7.20.0 and later, measurementId is optional
+        const firebaseConfig = {
+            apiKey: "AIzaSyB9kCQQZgjRKMqUT6qTLPS0sC2WnpfYzmA",
+            authDomain: "phishbuster-d4566.firebaseapp.com",
+            projectId: "phishbuster-d4566",
+            storageBucket: "phishbuster-d4566.appspot.com", // CORRECTED: was 'firebasestorage.app'
+            messagingSenderId: "647035624356",
+            appId: "1:647035624356:web:2278b88af424ecce7a3f31",
+            measurementId: "G-V93ERLVFRV"
+        };
+
+        // 4. Initialize Firebase
+        firebase.initializeApp(firebaseConfig);
+
+        // 5. Get Auth and Firestore instances
+        const auth = firebase.auth();
+        const db = firebase.firestore();
+
+        // 6. (Optional) Set up React Context for Auth and Firestore usage
+        const AuthContext = createContext();
+
+        const AuthProvider = ({ children }) => {
+            const [user, setUser] = useState(null);
+            const [loading, setLoading] = useState(true);
+            const [userData, setUserData] = useState(null);
+
+            useEffect(() => {
+                const unsubscribe = auth.onAuthStateChanged(async (user) => {
+                    setUser(user);
+                    if (user) {
+                        await loadUserData(user.uid);
+                    } else {
+                        setUserData(null);
+                    }
+                    setLoading(false);
+                });
+
+                return unsubscribe;
+            }, []);
+
+            const loadUserData = async (userId) => {
+                try {
+                    const doc = await db.collection('users').doc(userId).get();
+                    if (doc.exists) {
+                        setUserData(doc.data());
+                    } else {
+                        // No user data found, do nothing (should be created at sign up)
+                        setUserData(null);
+                    }
+                } catch (error) {
+                    console.error('Error loading user data:', error);
+                }
+            };
+
+            const updateUserProgress = async (score, completedQuestion) => {
+                if (!user) return;
+                
+                const newCompletedQuestions = [...(userData.completedQuestions || []), completedQuestion];
+                const newScore = userData.score + score;
+                const newLevel = Math.floor(newScore / 100) + 1;
+                
+                const updatedData = {
+                    ...userData,
+                    score: newScore,
+                    level: newLevel,
+                    completedQuestions: newCompletedQuestions
+                };
+
+                try {
+                    await db.collection('users').doc(user.uid).update(updatedData);
+                    await db.collection('leaderboard').doc(user.uid).set({
+                        username: userData.username,
+                        score: newScore
+                    });
+                    setUserData(updatedData);
+                } catch (error) {
+                    console.error('Error updating user progress:', error);
+                }
+            };
+
+            const signInWithGoogle = async () => {
+                const provider = new firebase.auth.GoogleAuthProvider();
+                try {
+                    await auth.signInWithPopup(provider);
+                } catch (error) {
+                    console.error('Google sign in error:', error);
+                }
+            };
+
+            const signInWithEmail = async (email, password) => {
+                try {
+                    await auth.signInWithEmailAndPassword(email, password);
+                } catch (error) {
+                    console.error('Email sign in error:', error);
+                    throw error;
+                }
+            };
+
+            const signUpWithEmail = async (email, password, username) => {
+                try {
+                    const result = await auth.createUserWithEmailAndPassword(email, password);
+                    await result.user.updateProfile({ displayName: username });
+                    // Save user data in Firestore
+                    const newUserData = {
+                        email: result.user.email,
+                        username: username,
+                        score: 0,
+                        level: 1,
+                        completedQuestions: [],
+                        streak: 0
+                    };
+                    await db.collection('users').doc(result.user.uid).set(newUserData);
+                    setUserData(newUserData);
+                } catch (error) {
+                    console.error('Email signup error:', error);
+                    throw error;
+                }
+            };
+
+            const signOut = () => auth.signOut();
+
+            return (
+                <AuthContext.Provider value={{
+                    user,
+                    userData,
+                    loading,
+                    signInWithGoogle,
+                    signInWithEmail,
+                    signUpWithEmail,
+                    signOut,
+                    updateUserProgress
+                }}>
+                    {children}
+                </AuthContext.Provider>
+            );
+        };
+
+        const useAuth = () => useContext(AuthContext);
+
+        // Login Component
+        const LoginPage = () => {
+            const { signInWithEmail, signUpWithEmail } = useAuth();
+            const [isSignUp, setIsSignUp] = useState(false);
+            const [email, setEmail] = useState('');
+            const [password, setPassword] = useState('');
+            const [username, setUsername] = useState('');
+            const [error, setError] = useState('');
+            const [resetEmail, setResetEmail] = useState('');
+            const [showReset, setShowReset] = useState(false);
+            const [resetMsg, setResetMsg] = useState('');
+
+            // Password reset handler
+            const handlePasswordReset = async (e) => {
+                e.preventDefault();
+                setResetMsg('');
+                setError('');
+                if (!resetEmail) {
+                    setError('Please enter your email.');
+                    return;
+                }
+                try {
+                    await firebase.auth().sendPasswordResetEmail(resetEmail);
+                    setResetMsg(`We have sent a password RESET LINK : Please check your email inbox for the reset link.`);
+                } catch (err) {
+                    setError(err.message);
+                }
+            };
+
+            const handleSubmit = async (e) => {
+                e.preventDefault();
+                setError('');
+                
+                try {
+                    if (isSignUp) {
+                        await signUpWithEmail(email, password, username);
+                    } else {
+                        await signInWithEmail(email, password);
+                    }
+                } catch (error) {
+                    setError(error.message);
+                }
+            };
+
+            return (
+                <div className="auth-container">
+                    <div className="auth-card">
+                        <div className="header">
+                            <div className="logo">🛡️ PhishBuster</div>
+                            <div className="tagline">Can you spot the phish?</div>
+                        </div>
+
+                        {!showReset ? (
+                            <>
+                                <form onSubmit={handleSubmit} className="auth-form">
+                                    {isSignUp && (
+                                        <input
+                                            type="text"
+                                            placeholder="Username"
+                                            value={username}
+                                            onChange={(e) => setUsername(e.target.value)}
+                                            className="auth-input"
+                                            required
+                                        />
+                                    )}
+                                    <input
+                                        type="email"
+                                        placeholder="Email"
+                                        value={email}
+                                        onChange={(e) => setEmail(e.target.value)}
+                                        className="auth-input"
+                                        required
+                                    />
+                                    <input
+                                        type="password"
+                                        placeholder="Password"
+                                        value={password}
+                                        onChange={(e) => setPassword(e.target.value)}
+                                        className="auth-input"
+                                        required
+                                    />
+                                    
+                                    {error && <div className="error-message">{error}</div>}
+                                    
+                                    <button type="submit" className="btn btn-primary">
+                                        {isSignUp ? 'Sign Up' : 'Sign In'}
+                                    </button>
+                                </form>
+
+                                <div className="auth-divider">or</div>
+
+                                {/* Forgot Password Option */}
+                                <button
+                                    type="button"
+                                    className="link-button"
+                                    style={{ marginTop: '1rem' }}
+                                    onClick={() => setShowReset(true)}
+                                >
+                                    <b><s>Forgot Password?</s></b>
+                                </button>
+
+                                <div className="auth-switch">
+                                    {isSignUp ? "Already have an account?" : "Don't have an account?"}
+                                    <button
+                                        type="button"
+                                        onClick={() => setIsSignUp(!isSignUp)}
+                                        className="link-button"
+                                    >
+                                        {isSignUp ? 'Sign In' : 'Sign Up'}
+                                    </button>
+                                </div>
+                            </>
+                        ) : (
+                            <>
+                                <form onSubmit={handlePasswordReset} className="auth-form">
+                                    <input
+                                        type="email"
+                                        placeholder="Enter your email"
+                                        value={resetEmail}
+                                        onChange={e => setResetEmail(e.target.value)}
+                                        className="auth-input"
+                                        required
+                                    />
+                                    <button type="submit" className="btn btn-primary">
+                                        Send Password Reset Email
+                                    </button>
+                                    {resetMsg && <div className="error-message" style={{ color: "#4CAF50", background: "#e8f5e9" }}>{resetMsg}</div>}
+                                    {error && <div className="error-message">{error}</div>}
+                                </form>
+                                <button
+                                    type="button"
+                                    className="link-button"
+                                    style={{ marginTop: '1rem' }}
+                                    onClick={() => { setShowReset(false); setResetMsg(''); setError(''); }}
+                                >
+                                    Back to Login
+                                </button>
+                            </>
+                        )}
+                    </div>
+                </div>
+            );
+        };
+
+        // Dashboard Component
+        const Dashboard = ({ onStartGame, onViewLeaderboard }) => {
+            const { userData, user } = useAuth();
+
+            return (
+                <div className="dashboard">
+                    <div className="dashboard-card">
+                        <h2>Welcome back, {userData?.username || user?.displayName}!</h2>
+                        
+                        <div className="stats-grid">
+                            <div className="stat-card">
+                                <div className="stat-icon">⭐</div>
+                                <div className="stat-value">{userData?.score || 0}</div>
+                                <div className="stat-label">Total XP</div>
+                            </div>
+                            <div className="stat-card">
+                                <div className="stat-icon">🎯</div>
+                                <div className="stat-value">{userData?.level || 1}</div>
+                                <div className="stat-label">Level</div>
+                            </div>
+                            <div className="stat-card">
+                                <div className="stat-icon">✅</div>
+                                <div className="stat-value">{userData?.completedQuestions?.length || 0}</div>
+                                <div className="stat-label">Completed</div>
+                            </div>
+                        </div>
+
+                        <div className="dashboard-actions">
+                            <button onClick={onStartGame} className="btn btn-primary btn-large">
+                                🎮 Start Game
+                            </button>
+                            <button onClick={onViewLeaderboard} className="btn btn-secondary btn-large">
+                                🏆 Leaderboard
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        // Game Component
+        const GameScreen = ({ onBackToDashboard }) => {
+            const { updateUserProgress, userData } = useAuth();
+            const [currentQuestion, setCurrentQuestion] = useState(null);
+            const [questionIndex, setQuestionIndex] = useState(0);
+            const [showResult, setShowResult] = useState(false);
+            const [userAnswer, setUserAnswer] = useState('');
+            const [isCorrect, setIsCorrect] = useState(false);
+            const [gameScore, setGameScore] = useState(0);
+            const [streak, setStreak] = useState(0);
+
+            useEffect(() => {
+                loadNextQuestion();
+            }, []);
+
+            const loadNextQuestion = () => {
+                const availableQuestions = window.phishingQuestions.filter(
+                    q => !userData?.completedQuestions?.includes(q.id)
+                );
+                
+                if (availableQuestions.length === 0) {
+                    // All questions completed, show success message
+                    alert('Congratulations! You\'ve completed all available questions!');
+                    onBackToDashboard();
+                    return;
+                }
+
+                const randomQuestion = availableQuestions[Math.floor(Math.random() * availableQuestions.length)];
+                setCurrentQuestion(randomQuestion);
+                setShowResult(false);
+                setUserAnswer('');
+            };
+
+            const handleAnswer = (answer) => {
+                setUserAnswer(answer);
+                const correct = answer === currentQuestion.answer;
+                setIsCorrect(correct);
+                setShowResult(true);
+
+                if (correct) {
+                    const points = 10 + (streak * 2); // Bonus points for streak
+                    setGameScore(gameScore + points);
+                    setStreak(streak + 1);
+                    updateUserProgress(points, currentQuestion.id);
+                } else {
+                    setStreak(0);
+                }
+            };
+
+            const handleNext = () => {
+                setQuestionIndex(questionIndex + 1);
+                loadNextQuestion();
+            };
+
+            if (!currentQuestion) {
+                return <div className="loading">Loading question...</div>;
+            }
+
+            return (
+                <div className="game-screen">
+                    <div className="game-header">
+                        <button onClick={onBackToDashboard} className="btn btn-back">← Back</button>
+                        <div className="game-stats">
+                            <span>Score: {gameScore}</span>
+                            <span>Streak: {streak}</span>
+                        </div>
+                    </div>
+
+                    <div className="question-card">
+                        <div className="question-header">
+                            <span className="question-type">{currentQuestion.type.toUpperCase()}</span>
+                            <span className="question-number">Question {questionIndex + 1}</span>
+                        </div>
+
+                        <div className="question-content">
+                            {currentQuestion.imageURL && (
+                                <img src={currentQuestion.imageURL} alt="Phishing sample" className="question-image" />
+                            )}
+                            <div className="question-text">{currentQuestion.content}</div>
+                        </div>
+
+                        {!showResult ? (
+                            <div className="answer-buttons">
+                                <button
+                                    onClick={() => handleAnswer('Safe')}
+                                    className="btn btn-safe"
+                                    disabled={showResult}
+                                >
+                                    ✅ Safe
+                                </button>
+                                <button
+                                    onClick={() => handleAnswer('Phishing')}
+                                    className="btn btn-phishing"
+                                    disabled={showResult}
+                                >
+                                    ❌ Phishing
+                                </button>
+                            </div>
+                        ) : (
+                            <div className="result-section">
+                                <div className={`result-indicator ${isCorrect ? 'correct' : 'incorrect'}`}>
+                                    {isCorrect ? '✅ Correct!' : '❌ Incorrect!'}
+                                </div>
+                                <div className="explanation">
+                                    <strong>Explanation:</strong> {currentQuestion.explanation}
+                                </div>
+                                <div className="correct-answer">
+                                    <strong>Correct Answer:</strong> {currentQuestion.answer}
+                                </div>
+                                <button onClick={handleNext} className="btn btn-primary">
+                                    Next Question →
+                                </button>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            );
+        };
+
+        // Leaderboard Component
+        const Leaderboard = ({ onBackToDashboard }) => {
+            const [leaderboardData, setLeaderboardData] = useState([]);
+            const [userRank, setUserRank] = useState(null);
+            const { user, userData } = useAuth();
+
+            useEffect(() => {
+                loadLeaderboard();
+            }, []);
+
+            const loadLeaderboard = async () => {
+                try {
+                    const snapshot = await db.collection('leaderboard')
+                        .orderBy('score', 'desc')
+                        .limit(10)
+                        .get();
+                    
+                    const data = snapshot.docs.map((doc, index) => ({
+                        id: doc.id,
+                        rank: index + 1,
+                        ...doc.data()
+                    }));
+                    
+                    setLeaderboardData(data);
+
+                    // Find user's rank
+                    const userEntry = data.find(entry => entry.id === user?.uid);
+                    if (userEntry) {
+                        setUserRank(userEntry.rank);
+                    }
+                } catch (error) {
+                    console.error('Error loading leaderboard:', error);
+                }
+            };
+
+            return (
+                <div className="leaderboard">
+                    <div className="leaderboard-header">
+                        <button onClick={onBackToDashboard} className="btn btn-back">← Back</button>
+                        <h2>🏆 Leaderboard</h2>
+                    </div>
+
+                    <div className="user-rank-card">
+                        <h3>Your Stats</h3>
+                        <div className="user-stats">
+                            <span>Rank: {userRank || 'Unranked'}</span>
+                            <span>Score: {userData?.score || 0} XP</span>
+                            <span>Level: {userData?.level || 1}</span>
+                        </div>
+                    </div>
+
+                    <div className="leaderboard-list">
+                        <h3>Top 10 Players</h3>
+                        {leaderboardData.map((player, index) => (
+                            <div key={player.id} className={`leaderboard-item ${player.id === user?.uid ? 'current-user' : ''}`}>
+                                <div className="rank">
+                                    {index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : `#${player.rank}`}
+                                </div>
+                                <div className="player-info">
+                                    <div className="username">{player.username}</div>
+                                    <div className="score">{player.score} XP</div>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            );
+        };
+
+        // Main App Component
+        const App = () => {
+            const { user, loading, signOut } = useAuth();
+            const [currentView, setCurrentView] = useState('dashboard');
+
+            if (loading) {
+                return <div className="loading">Loading...</div>;
+            }
+
+            if (!user) {
+                return <LoginPage />;
+            }
+
+            const renderView = () => {
+                switch (currentView) {
+                    case 'dashboard':
+                        return (
+                            <Dashboard
+                                onStartGame={() => setCurrentView('game')}
+                                onViewLeaderboard={() => setCurrentView('leaderboard')}
+                            />
+                        );
+                    case 'game':
+                        return <GameScreen onBackToDashboard={() => setCurrentView('dashboard')} />;
+                    case 'leaderboard':
+                        return <Leaderboard onBackToDashboard={() => setCurrentView('dashboard')} />;
+                    default:
+                        return <Dashboard onStartGame={() => setCurrentView('game')} onViewLeaderboard={() => setCurrentView('leaderboard')} />;
+                }
+            };
+
+            return (
+                <div className="app">
+                    <nav className="navbar">
+                        <div className="nav-left">
+                            <span className="nav-logo">🛡️ PhishBuster</span>
+                        </div>
+                        <div className="nav-right">
+                            <span className="nav-user">Welcome, {user.displayName || user.email}</span>
+                            <button onClick={signOut} className="btn btn-outline">Logout</button>
+                        </div>
+                    </nav>
+                    <main className="main-content">
+                        {renderView()}
+                    </main>
+                </div>
+            );
+        };
+
+        // Root App with Provider
+        const RootApp = () => {
+            return (
+                <AuthProvider>
+                    <App />
+                </AuthProvider>
+            );
+        };
+
+        ReactDOM.render(<RootApp />, document.getElementById('root'));
+    </script>
+</body>
+</html>
